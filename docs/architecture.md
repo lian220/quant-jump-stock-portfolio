@@ -15,35 +15,59 @@
 
 Core API와 Data Engine 모두 포트&어댑터 구조를 적용해 도메인을 외부 기술로부터 격리한다.
 
+```mermaid
+flowchart TB
+    subgraph IN [adapter/input]
+        REST[REST Controller]
+        LIS[Pub/Sub Listener]
+    end
+    subgraph APP [application]
+        UC[UseCase · Service<br/>트랜잭션 경계]
+    end
+    subgraph DOM [domain — 외부 의존성 없음]
+        D[엔티티 · 정책 · 도메인 모델]
+    end
+    subgraph OUT [adapter/output]
+        JPA[JPA]
+        MG[MongoDB]
+        GCP[GCP · Slack]
+    end
+
+    REST --> UC
+    LIS --> UC
+    UC --> D
+    UC --> JPA
+    UC --> MG
+    UC --> GCP
+
+    classDef dom fill:#22c55e,stroke:#16a34a,color:#fff
+    classDef app fill:#0ea5e9,stroke:#0284c7,color:#fff
+    classDef io fill:#475569,stroke:#334155,color:#fff
+    class D dom
+    class UC app
+    class REST,LIS,JPA,MG,GCP io
 ```
-adapter/input   (REST Controller, Pub/Sub Listener)
-      │
-      ▼
-application      (UseCase / Service — 트랜잭션 경계)
-      │
-      ▼
-domain           (엔티티, 정책, 도메인 모델 — 외부 의존성 없음)
-      │
-      ▼
-adapter/output   (JPA, MongoDB, GCP, Slack 어댑터)
-```
+
+> 의존성은 항상 **바깥 → 안(domain)** 방향. domain은 프레임워크·DB를 모르므로 순수 단위 테스트가 가능하다.
 
 ## 데이터 흐름 — AI 예측 파이프라인
 
-```
-Cloud Scheduler (매일 23:05 KST)
-      │
-      ▼
-Data Engine ──▶ 주가/뉴스/경제지표 수집 (yfinance, FRED, KIS)
-      │
-      ▼
-Vertex AI ──▶ ML 예측 (목표가, 상승 확률)
-      │
-      ▼
-점수 산식(scoring_spec.yaml) ──▶ 0~100 종합 점수 + 등급
-      │
-      ▼
-MongoDB 저장 ──▶ Pub/Sub ──▶ Core API 캐시 무효화 ──▶ 사용자 노출
+```mermaid
+flowchart LR
+    A[⏰ Cloud Scheduler<br/>매일 23:05 KST]:::ext --> B[Data Engine<br/>주가·뉴스·경제지표 수집<br/>yfinance · FRED · KIS]:::core
+    B --> C[🧠 Vertex AI<br/>ML 예측<br/>목표가 · 상승확률]:::ext
+    C --> D[scoring_spec.yaml<br/>0~100 종합점수 + 등급]:::score
+    D --> E[(MongoDB 저장)]:::db
+    E --> F{{"Pub/Sub"}}:::queue
+    F --> G[Core API<br/>캐시 무효화]:::core
+    G --> H([👤 사용자 노출]):::user
+
+    classDef ext fill:#475569,stroke:#334155,color:#fff
+    classDef core fill:#22c55e,stroke:#16a34a,color:#fff
+    classDef score fill:#f97316,stroke:#ea580c,color:#fff
+    classDef db fill:#6366f1,stroke:#4f46e5,color:#fff
+    classDef queue fill:#eab308,stroke:#ca8a04,color:#1e293b
+    classDef user fill:#1e293b,stroke:#64748b,color:#fff
 ```
 
 ## 데이터 저장소
