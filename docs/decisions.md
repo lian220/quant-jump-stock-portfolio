@@ -9,7 +9,7 @@
 | 0003 | Accepted | Quartz Scheduler → GCP Cloud Scheduler 전환 |
 | 0004 | Accepted | GCE VM → Cloud Run 전환 |
 | 0005 | Accepted | AES-CBC → AES-GCM 암호화 전환 |
-| 0006 | Accepted | 추천 점수 모델 재설계 (0~100 정규화 가중합) |
+| 0006 | Accepted | 추천 점수 모델 재설계 (0\~100 정규화 가중합) |
 
 ---
 
@@ -52,13 +52,13 @@
 발견된 결함:
 1. 만점 도달 불가 (composite_max 7.4지만 실효 상한 ~5.45)
 2. weight 모순 (tech가 weight 최대인데 실제 기여도 최소)
-3. 이중 스케일 버그 (숫자는 0~100, 색·등급은 0~7.4 → "52점인데 녹색")
+3. 이중 스케일 버그 (숫자는 0\~100, 색·등급은 0\~7.4 → "52점인데 녹색")
 4. 0점 쏠림 (0.5 컷오프로 절반이 0점)
 5. sentiment 분모 불일치 (실범위 ±0.35인데 분모 10)
 6. SSoT 드리프트 (yaml ↔ Kotlin 값 분기)
 
 **결정**
-- 축별 0~1 정규화 → weight 가중합 → 0~100 단일 스케일
+- 축별 0\~1 정규화 → weight 가중합 → 0\~100 단일 스케일
 - 컷오프 제거 → 선형 매핑, 결측은 축 제외 후 weight 재정규화
 - `scoring_spec.yaml` 단일 SSoT (Kotlin/FE pass-through)
 - 462 표본(11거래일 × 42종목) percentile 등급 재보정
