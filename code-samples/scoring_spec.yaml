@@ -1,0 +1,91 @@
+# 점수 모델 SSoT — ADR 0006 0~100 재설계 (Phase 1)
+# 본 파일은 backend repo 루트. Data Engine 이미지 빌드 시 COPY 됨.
+# Python ScoringPolicy 가 SCORING_SPEC_PATH env 또는 default 경로로 로드.
+# 산식: 각 축 0~1 정규화 → weight 가중합(합=1.0) → ×100. 결측 축은 제외 후 weight 재정규화.
+
+spec_version: "2.1.0"        # ADR 0006 사후 검토 반영 (veto 임계·라벨/필터 재보정)
+formula_version: "2.0.0"     # 산식 자체 변경 (0~100, 선형매핑, 결측 재정규화)
+# 변경 이력:
+#   spec 1.0.0 / formula 1.0.0 — PR 1 SSoT 중앙화 (현행 보존, 2026-05-21)
+#   spec 1.1.0 / formula 1.1.0 — PR 3b negative AI veto: rise_pct<0 → composite=0 (2026-05-22)
+#   spec 1.2.0 / formula 1.1.0 — PR 5 VIX macro gate (산식 외부, formula 보존, 2026-05-22)
+#   spec 2.0.0 / formula 2.0.0 — ADR 0006 0~100 재설계 (선형매핑·결측 재정규화·veto 비활성, 2026-06-07)
+#   spec 2.1.0 / formula 2.0.0 — 검토 반영: veto_threshold_pct(-10%) 신설, 라벨 임계 등급 정렬
+#                                (0.77/0.68/0.58), min_composite_score 68 (B 경계 정합) (2026-06-10)
+description: |
+  AI 예측 + 뉴스 감정 + 기술 분석. 각 축 0~1 정규화 후 weight 가중합 → 0~100.
+  결측 축은 제외하고 남은 weight 를 합=1 로 재정규화 (벌점 0점 금지).
+  본 spec 변경 시 quant-jump-stock-data-engine 테스트 (golden + property +
+  regression) 재실행 필수.
+
+consumers:
+  - python_data_engine
+  - kotlin_core_api   # ADR 0006 §2.8: 저장된 0~100 composite/grade 전달, 재계산 금지
+
+axes:
+  ai:
+    weight: 0.3
+    max: 10.0
+    cap_strategy: fixed_pct
+    cap_threshold_pct: 20.0       # 현행 유지 (vol_normalized 는 후속)
+    missing_policy: redistribute   # ADR 0006 §2.4: 결측 축 제외 후 weight 재정규화
+    negative_policy: zero          # ADR 0006 §2.5: veto 기본 비활성 (1차). 하락은 ai 저점수로 흡수. rollback: veto
+    veto_threshold_pct: -10.0      # ADR 0006 §2.5: veto 활성 시 rise_pct < -10% 강한 하락만 차단.
+                                   # 현재 미활성(negative_policy=zero) — veto 전환 시 자동 적용되는 후보값 (hit rate >= 60% 검증 후 확정)
+  technical:
+    weight: 0.5
+    max: 3.5
+    components:
+      golden_cross: 1.5
+      rsi_below_threshold: 1.0
+      macd_buy_signal: 1.0
+    rsi_threshold: 70
+    missing_policy: redistribute
+  sentiment:
+    weight: 0.2
+    max: 10.0
+    raw_clip: 0.35                 # ADR 0006 §2.3: 선형매핑 분모 0.7 = 2*raw_clip (Alpha Vantage 실범위 ±0.35)
+    missing_policy: redistribute
+
+composite_max: 100.0               # derived: (Σ weight) * 100 = 1.0 * 100. load 시 검증
+
+# ADR 0006 §2.6 percentile 기반 임계. 운영 분포로 재보정 (yaml SSoT, 하드코딩 금지).
+# 재보정 근거: 2026-05-12~06-04 11거래일 × 42종목 = 462표본, mean 66.0 / std 15.1.
+#   percentile: p90=82.1(S) / p75=76.6(A) / p50=67.8(B) / p25=57.6(C).
+#   결과 분포: S 11% / A 13% / B 25% / C 24% / D 27% ("상위 ~10%=S" 충족).
+#   표본 누적되면 재산출 권장.
+grades:
+  S: { min: 82.0, label: "매우 강한 매수", color: emerald }
+  A: { min: 77.0, label: "강한 매수",     color: cyan }
+  B: { min: 68.0, label: "보통 매수",     color: yellow }
+  C: { min: 58.0, label: "약한 매수",     color: orange }
+  D: { min: 0.0,  label: "신호 없음",     color: red }
+
+# Slack 표시 라벨 — confidence(=composite/100) 기반 임계, 등급 경계와 1:1 정렬.
+# 재보정 (2026-06-10, 전문가 패널 검증):
+#   - 구 0.65/0.45/0.30 은 구 스케일(composite/7.4) confidence 기준이라
+#     신 0~100 스케일(mean 0.66)에선 평균 종목이 STRONG 후보가 되는 인플레이션 발생.
+#   - 등급 경계와 정렬: STRONG=A(77)/RECOMMEND=B(68)/WATCH=C(58) — "C등급인데 강력 추천" 해소.
+#   - min_tech_signals 게이트 제거: tech 신호는 이미 composite 의 50% weight 로 반영되므로
+#     라벨에서 또 요구하면 이중 반영 (패널 Critical — "B등급 통과인데 라벨 WATCH" 채널 불일치).
+#     라벨 = 등급의 채널별 표현 (Slack=라벨, 웹=등급, 채널당 단일 표현).
+recommendation_labels:
+  STRONG:    { min_confidence: 0.77, label: "강력 추천", emoji: "🟢" }
+  RECOMMEND: { min_confidence: 0.68, label: "추천",       emoji: "🟡" }
+  WATCH:     { min_confidence: 0.58, label: "관심 종목",  emoji: "🟠" }
+  NONE:      { label: "추천 없음", emoji: "⚪" }
+
+recommendation_filter:
+  # ADR 0006 §2.6 — 0~100 스케일. grade B 경계(68)와 정렬 (2026-06-10 재보정).
+  # 구 60.0 은 placeholder 가 grades 재보정(B 60→68)을 따라가지 못한 드리프트였음.
+  min_composite_score: 68.0         # grade B(보통 매수) 이상만 추천 대상
+  max_recommendations: 5
+
+# 거시 시장 변동성 gate (산식 외부 pre-flight gate).
+macro_gates:
+  vix:
+    enabled: true
+    threshold: 35.0               # VIX > 35 시 차단. prod 최근 30일 평균 17.93 (저변동성), 여유.
+    source: "daily_stock_data.yfinance_indicators.^VIX"
+    missing_policy: skip          # skip = gate 미발동 (정상 진행) | block = 차단
+    description: "시장 변동성 과다 시 추천 전체 차단 (Taleb 비대칭 위험 — 변동성 폭증 시 신호 노이즈)"
